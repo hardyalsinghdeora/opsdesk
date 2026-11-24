@@ -1,0 +1,7 @@
+{
+  "messageId": "<news-2026-11@vendor.example>",
+  "from": "Vendor News <news@vendor.example>",
+  "to": "enquiries@gulfcool.example",
+  "subject": "November newsletter",
+  "text": "Our latest filters are in stock. Click here to unsubscribe."
+}

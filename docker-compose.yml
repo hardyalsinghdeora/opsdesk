@@ -1,0 +1,27 @@
+# Local stack: Postgres + opsdesk. `docker compose up --build`
+# Set OPSDESK_API_KEYS (and ANTHROPIC_API_KEY for the real model) in .env first.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: opsdesk
+      POSTGRES_PASSWORD: opsdesk
+      POSTGRES_DB: opsdesk
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opsdesk"]
+      interval: 2s
+      retries: 20
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  app:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://opsdesk:opsdesk@db:5432/opsdesk
+    ports: ["3000:3000"]
+
+volumes:
+  pgdata:

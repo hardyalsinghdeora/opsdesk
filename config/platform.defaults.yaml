@@ -1,0 +1,23 @@
+# Layer 1 of 3: platform defaults. Every company pack is merged on top of this,
+# and runtime overrides (stored per tenant in the database) are merged last.
+locale: en
+timezone: UTC
+
+llm:
+  model: claude-opus-5-5
+  effort: medium
+  max_tokens: 8000
+
+approvals:
+  # Write actions need a human unless the company pack says otherwise per tool.
+  default: required
+
+channels:
+  email:
+    enabled: false
+    min_confidence: 0.7   # below this, every proposed action needs approval
+
+lead_fields: []
+
+# Tools are off unless a company pack switches them on.
+tools: {}

@@ -1,0 +1,49 @@
+# Fictional company: HVAC and facilities maintenance, Dubai.
+id: gulfcool
+name: GulfCool Technical Services
+industry: HVAC servicing, duct cleaning and facilities maintenance for villas, offices and retail units in the UAE
+currency: AED
+timezone: Asia/Dubai
+
+channels:
+  email:
+    enabled: true
+    addresses: [enquiries@gulfcool.example]
+
+lead_fields:
+  - key: property_type
+    label: Property type
+    description: villa, apartment, office, warehouse or retail
+  - key: emirate
+    label: Emirate
+    description: which emirate the property is in, e.g. Dubai, Sharjah, Abu Dhabi
+
+tools:
+  crm.create_lead:
+    enabled: true
+    approval: auto          # low-risk: lead records are created straight away
+    settings:
+      default_stage: new
+      owner: sales@gulfcool.example
+  quote.issue:
+    enabled: true
+    approval: required      # money: a person signs off every quote
+    settings:
+      tax_rate: 0.05        # UAE VAT
+      valid_days: 14
+      price_list:
+        - code: AC-SERVICE
+          name: Split AC unit service
+          unit: unit
+          unit_price: 180
+          aliases: [ac service, ac servicing, ac unit, split unit, air conditioner]
+        - code: DUCT-CLEAN
+          name: Duct cleaning
+          unit: room
+          unit_price: 250
+          aliases: [duct cleaning, duct clean, ducts]
+        - code: CALLOUT
+          name: Emergency call-out
+          unit: visit
+          unit_price: 350
+          aliases: [emergency, call-out, callout, urgent visit]

@@ -1,0 +1,7 @@
+{
+  "messageId": "<aa01@acme-imports.example>",
+  "from": "Tom Reyes <tom@acme-imports.example>",
+  "to": "sales@northwind.example",
+  "subject": "Rate request: 2x40ft Shanghai to Felixstowe",
+  "text": "Hi team,\n\nPlease quote two 40ft containers.\nOrigin: Shanghai\nDestination: Felixstowe\nCargo type: general cargo\nMode: sea\n\nBest,\nTom Reyes\n+44 20 7946 0000\nAcme Imports Ltd"
+}

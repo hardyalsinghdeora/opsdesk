@@ -1,0 +1,34 @@
+# Fictional company: freight forwarding. Different industry, same core, no code changes.
+id: northwind
+name: Northwind Freight
+industry: international freight forwarding (sea and air) and customs brokerage
+currency: USD
+timezone: Europe/London
+
+channels:
+  email:
+    enabled: true
+    min_confidence: 0.8
+    addresses: [sales@northwind.example]
+
+lead_fields:
+  - key: origin
+    label: Origin
+    description: city or port the shipment leaves from
+  - key: destination
+    label: Destination
+    description: city or port the shipment goes to
+  - key: cargo_type
+    label: Cargo type
+    description: what is being shipped, e.g. general cargo, reefer, hazardous
+  - key: mode
+    label: Mode
+    description: sea, air or road
+
+tools:
+  crm.create_lead:
+    enabled: true           # approval falls back to the platform default: required
+    settings:
+      default_stage: qualification
+  quote.issue:
+    enabled: false          # freight rates are quoted by people here; the tool is off

@@ -1,0 +1,7 @@
+{
+  "messageId": "<z81@mail.example>",
+  "from": "someone@mail.example",
+  "to": "enquiries@gulfcool.example",
+  "subject": "Request",
+  "text": "Hi there. [[simulate:refusal]]"
+}
