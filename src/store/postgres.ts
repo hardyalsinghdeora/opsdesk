@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { sealAuditEntry } from "../audit/chain.ts";
-import { NotFoundError } from "../core/errors.ts";
+import { ConflictError, NotFoundError } from "../core/errors.ts";
+import type { Principal, Role } from "../auth/principal.ts";
 import type { Json } from "../core/json.ts";
-import type { ActionRecord, AuditEntry, InboundEmail, Lead, Quote } from "../core/types.ts";
+import type { ActionRecord, AuditEntry, ContactRecord, InboundEmail, Lead, Quote, StaffRecord } from "../core/types.ts";
 import type { Store, TenantTx } from "./types.ts";
 
 type Row = Record<string, any>;
@@ -31,6 +32,24 @@ export class PostgresStore implements Store {
       "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
       [id, name],
     );
+  }
+
+  async resolveToken(tokenHash: string): Promise<Principal | null> {
+    const client = await this.pool.connect();
+    try {
+      // As the application role, which can call the lookup function but not read staff rows.
+      await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE opsdesk_app");
+      const res = await client.query("SELECT * FROM opsdesk_resolve_token($1)", [tokenHash]);
+      await client.query("COMMIT");
+      const r = res.rows[0];
+      return r ? { tenantId: r.tenant_id, staffId: r.staff_id, actor: r.email, role: r.role as Role } : null;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async withTenant<T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
@@ -77,6 +96,7 @@ function toLead(r: Row): Lead {
   return {
     id: r.id,
     tenantId: r.tenant_id,
+    contactId: r.contact_id,
     contact: r.contact,
     summary: r.summary,
     stage: r.stage,
@@ -127,6 +147,34 @@ function toAction(r: Row): ActionRecord {
     error: r.error,
   };
 }
+
+function toContact(r: Row): ContactRecord {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    name: r.name,
+    email: r.email,
+    phone: r.phone,
+    company: r.company,
+    crmRef: r.crm_ref,
+    createdAt: iso(r.created_at)!,
+    updatedAt: iso(r.updated_at)!,
+  };
+}
+
+function toStaff(r: Row): StaffRecord {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    email: r.email,
+    name: r.name,
+    role: r.role,
+    createdAt: iso(r.created_at)!,
+    revokedAt: iso(r.revoked_at),
+  };
+}
+
+const STAFF_COLUMNS = "id, tenant_id, email, name, role, created_at, revoked_at";
 
 function toAudit(r: Row): AuditEntry {
   return {
@@ -193,11 +241,74 @@ class PgTenantTx implements TenantTx {
     if (res.rowCount === 0) throw new NotFoundError("Inbound email");
   }
 
+  async listInbound(filter: { status?: InboundEmail["status"] } = {}) {
+    const res = filter.status
+      ? await this.db.query("SELECT * FROM inbound_emails WHERE status = $1 ORDER BY received_at, id", [filter.status])
+      : await this.db.query("SELECT * FROM inbound_emails ORDER BY received_at, id");
+    return res.rows.map(toInbound);
+  }
+
+  async findContact(query: { email: string | null; phone: string | null }) {
+    if (query.email) {
+      const r = await this.one("SELECT * FROM contacts WHERE email = $1", [query.email.toLowerCase()]);
+      if (r) return toContact(r);
+    }
+    if (query.phone) {
+      const r = await this.one("SELECT * FROM contacts WHERE phone = $1 ORDER BY created_at LIMIT 1", [query.phone]);
+      if (r) return toContact(r);
+    }
+    return null;
+  }
+
+  async insertContact(c: Parameters<TenantTx["insertContact"]>[0]) {
+    try {
+      const r = await this.one(
+        `INSERT INTO contacts (id, tenant_id, name, email, phone, company, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *`,
+        [randomUUID(), this.tenantId, c.name, c.email?.toLowerCase() ?? null, c.phone, c.company, this.clock()],
+      );
+      return toContact(r!);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new ConflictError("contact_exists", `${c.email} is already a contact`);
+      throw error;
+    }
+  }
+
+  async updateContact(id: string, p: Parameters<TenantTx["updateContact"]>[1]) {
+    const r = await this.one(
+      `UPDATE contacts SET
+         name = COALESCE($2, name), email = COALESCE($3, email), phone = COALESCE($4, phone),
+         company = COALESCE($5, company), crm_ref = COALESCE($6, crm_ref), updated_at = $7
+       WHERE id = $1 RETURNING *`,
+      [id, p.name ?? null, p.email?.toLowerCase() ?? null, p.phone ?? null, p.company ?? null, p.crmRef ?? null, this.clock()],
+    );
+    if (!r) throw new NotFoundError("Contact");
+    return toContact(r);
+  }
+
+  async listContacts() {
+    const res = await this.db.query("SELECT * FROM contacts ORDER BY created_at, id");
+    return res.rows.map(toContact);
+  }
+
+  async getSyncState(key: string) {
+    const r = await this.one("SELECT value FROM sync_state WHERE key = $1", [key]);
+    return (r?.value as string | undefined) ?? null;
+  }
+
+  async setSyncState(key: string, value: string) {
+    await this.db.query(
+      `INSERT INTO sync_state (tenant_id, key, value, updated_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [this.tenantId, key, value],
+    );
+  }
+
   async insertLead(d: Parameters<TenantTx["insertLead"]>[0]) {
     const r = await this.one(
-      `INSERT INTO leads (id, tenant_id, contact, summary, stage, owner, urgency, custom_fields, source, source_ref, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [randomUUID(), this.tenantId, json(d.contact), d.summary, d.stage, d.owner, d.urgency, json(d.customFields), d.source, d.sourceRef, this.clock()],
+      `INSERT INTO leads (id, tenant_id, contact_id, contact, summary, stage, owner, urgency, custom_fields, source, source_ref, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [randomUUID(), this.tenantId, d.contactId, json(d.contact), d.summary, d.stage, d.owner, d.urgency, json(d.customFields), d.source, d.sourceRef, this.clock()],
     );
     return toLead(r!);
   }
@@ -290,6 +401,35 @@ class PgTenantTx implements TenantTx {
   async listAudit() {
     const res = await this.db.query("SELECT * FROM audit_log ORDER BY seq");
     return res.rows.map(toAudit);
+  }
+
+  async insertStaff(d: Parameters<TenantTx["insertStaff"]>[0]) {
+    try {
+      const r = await this.one(
+        `INSERT INTO staff (id, tenant_id, email, name, role, token_hash, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${STAFF_COLUMNS}`,
+        [randomUUID(), this.tenantId, d.email.toLowerCase(), d.name, d.role, d.tokenHash, this.clock()],
+      );
+      return toStaff(r!);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") {
+        throw new ConflictError("staff_exists", `${d.email.toLowerCase()} already has access`);
+      }
+      throw error;
+    }
+  }
+
+  async listStaff() {
+    const res = await this.db.query(`SELECT ${STAFF_COLUMNS} FROM staff ORDER BY created_at, email`);
+    return res.rows.map(toStaff);
+  }
+
+  async revokeStaff(email: string) {
+    const res = await this.db.query("UPDATE staff SET revoked_at = $2 WHERE email = $1 AND revoked_at IS NULL", [
+      email.toLowerCase(),
+      this.clock(),
+    ]);
+    return (res.rowCount ?? 0) > 0;
   }
 
   async getOverrides() {

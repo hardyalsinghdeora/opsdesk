@@ -8,6 +8,9 @@ import { FakeExtractor } from "./llm/fake.ts";
 import { MemoryStore } from "./store/memory.ts";
 import type { Store, TenantTx } from "./store/types.ts";
 import { ToolRegistry, type Toolset } from "./tools/registry.ts";
+import { createConnectors, type ConnectorEnv } from "./connectors/factory.ts";
+import type { Connectors } from "./connectors/types.ts";
+import { resolveWorkflows, type ResolvedWorkflow } from "./workflows/workflows.ts";
 
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -18,6 +21,8 @@ export interface Runtime {
   registry: ToolRegistry;
   gateway: ActionGateway;
   extractor: Extractor;
+  /** Each company's connectors, built once at startup. */
+  connectors: Map<string, Connectors>;
   clock: () => Date;
 }
 
@@ -29,6 +34,8 @@ export interface RuntimeOptions {
   registry?: ToolRegistry;
   extractor?: Extractor;
   clock?: () => Date;
+  /** Where connectors read secrets and make requests; tests pass stubs. */
+  connectorEnv?: ConnectorEnv;
 }
 
 /**
@@ -43,11 +50,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     registry: options.registry ?? new ToolRegistry(),
     gateway: new ActionGateway(clock),
     extractor: options.extractor ?? new FakeExtractor(),
+    connectors: new Map(),
     clock,
   };
   for (const id of rt.source.packs.keys()) {
     const config = resolveCompanyConfig(rt.source, id);
-    rt.registry.forCompany(config);
+    resolveWorkflows(config, rt.registry.forCompany(config), { strict: true });
+    rt.connectors.set(id, createConnectors(config, options.connectorEnv));
     await rt.store.ensureTenant(id, config.name);
   }
   return rt;
@@ -56,10 +65,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 export interface TenantScope extends GatewayScope {
   config: CompanyConfig;
   toolset: Toolset;
+  workflows: ResolvedWorkflow[];
 }
 
 /** Resolve the tenant's config (with its stored overrides) inside a transaction. */
 export async function scopeFor(rt: Runtime, tx: TenantTx): Promise<TenantScope> {
   const config = resolveCompanyConfig(rt.source, tx.tenantId, await tx.getOverrides());
-  return { tx, config, toolset: rt.registry.forCompany(config) };
+  const toolset = rt.registry.forCompany(config);
+  return { tx, config, toolset, workflows: resolveWorkflows(config, toolset), connectors: rt.connectors.get(tx.tenantId) ?? {} };
 }

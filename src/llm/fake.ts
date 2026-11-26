@@ -49,6 +49,11 @@ export class FakeExtractor implements Extractor {
       custom[key] = m?.[1]?.trim() ?? null;
     }
 
+    // Intent by keyword: "quote" by its usual words, any other label if it appears in the text.
+    const intent =
+      request.intents.find((i) => (i.name === "quote" ? QUOTE_WORDS.test(text) : lower.includes(i.name.replace(/_/g, " "))))?.name ??
+      "other";
+
     const filled = [email, name, phone].filter(Boolean).length;
     const confidence = Math.round(Math.min(0.95, 0.4 + filled * 0.15 + (items.length > 0 ? 0.1 : 0)) * 100) / 100;
 
@@ -60,6 +65,7 @@ export class FakeExtractor implements Extractor {
           contact: { name, email, phone, company },
           summary: subject || body.split("\n")[0] || "(no summary)",
           urgency: URGENT.test(text) ? "high" : "normal",
+          intent,
           confidence,
           custom_fields: custom,
           wants_quote: QUOTE_WORDS.test(text),

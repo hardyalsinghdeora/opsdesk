@@ -4,6 +4,7 @@ import type { Json } from "../core/json.ts";
 import type { ActionRecord } from "../core/types.ts";
 import type { TenantTx } from "../store/types.ts";
 import type { Toolset } from "../tools/registry.ts";
+import type { Connectors } from "../connectors/types.ts";
 
 export interface ActionRequest {
   tool: string;
@@ -35,6 +36,8 @@ export interface GatewayScope {
   tx: TenantTx;
   config: CompanyConfig;
   toolset: Toolset;
+  /** The company's external systems. Only tools, run by the gateway, use them. */
+  connectors?: Connectors;
 }
 
 /**
@@ -62,6 +65,16 @@ export class ActionGateway {
       return { ok: false, error: new ToolDisabledError(req.tool) };
     }
     const { tool, settings, approval } = toolset.get(req.tool);
+
+    if (tool.effect === "write" && approval === "never") {
+      await tx.appendAudit({
+        actor: req.actor,
+        type: "action.refused",
+        subject: req.tool,
+        data: { reason: "policy_never", idempotency_key: req.idempotencyKey },
+      });
+      return { ok: false, error: new ForbiddenError(`Tool "${req.tool}" is set to never run for this company`) };
+    }
 
     const existing = await tx.getActionByKey(req.idempotencyKey);
     if (existing) {
@@ -127,8 +140,8 @@ export class ActionGateway {
       await scope.tx.appendAudit({ actor: approver, type: "action.refused", subject: action.id, data: { reason: "self_approval" } });
       return { ok: false, error: new ForbiddenError("The requester of an action cannot approve it") };
     }
-    if (!scope.toolset.has(action.tool)) {
-      // Switched off after it was proposed: refuse rather than act on stale permission.
+    if (!scope.toolset.has(action.tool) || scope.toolset.get(action.tool).approval === "never") {
+      // Switched off, or set to never, after it was proposed: refuse rather than act on stale permission.
       await scope.tx.appendAudit({ actor: approver, type: "action.refused", subject: action.id, data: { reason: "tool_disabled" } });
       return { ok: false, error: new ToolDisabledError(action.tool) };
     }
@@ -165,7 +178,7 @@ export class ActionGateway {
     const input = tool.inputSchema.parse(action.input);
     try {
       const result = await tx.attempt(() =>
-        tool.execute({ tenantId: tx.tenantId, config, settings, tx, now: this.clock(), actor }, input),
+        tool.execute({ tenantId: tx.tenantId, config, settings, tx, now: this.clock(), actor, connectors: scope.connectors ?? {} }, input),
       );
       const done = await tx.updateAction(action.id, { status: "executed", result });
       await tx.appendAudit({ actor, type: "action.executed", subject: action.id, data: { tool: action.tool, result } });

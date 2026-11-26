@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { sealAuditEntry } from "../audit/chain.ts";
-import { NotFoundError } from "../core/errors.ts";
-import type { ActionRecord, AuditEntry, InboundEmail, Lead, Quote } from "../core/types.ts";
+import { ConflictError, NotFoundError } from "../core/errors.ts";
+import type { Principal } from "../auth/principal.ts";
+import type { ActionRecord, AuditEntry, ContactRecord, InboundEmail, Lead, Quote, StaffRecord } from "../core/types.ts";
 import type { Store, TenantTx } from "./types.ts";
 
 interface TenantState {
@@ -12,6 +13,9 @@ interface TenantState {
   actions: ActionRecord[];
   audit: AuditEntry[];
   overrides: Record<string, unknown>;
+  staff: (StaffRecord & { tokenHash: string })[];
+  contacts: ContactRecord[];
+  sync: Record<string, string>;
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -33,7 +37,7 @@ export class MemoryStore implements Store {
 
   async ensureTenant(id: string, name: string): Promise<void> {
     if (!this.tenants.has(id)) {
-      this.tenants.set(id, { name, inbound: [], leads: [], quotes: [], actions: [], audit: [], overrides: {} });
+      this.tenants.set(id, { name, inbound: [], leads: [], quotes: [], actions: [], audit: [], overrides: {}, staff: [], contacts: [], sync: {} });
     }
   }
 
@@ -49,6 +53,14 @@ export class MemoryStore implements Store {
     });
     this.locks.set(tenantId, run);
     return run;
+  }
+
+  async resolveToken(tokenHash: string): Promise<Principal | null> {
+    for (const [tenantId, state] of this.tenants) {
+      const person = state.staff.find((p) => p.tokenHash === tokenHash && p.revokedAt === null);
+      if (person) return { tenantId, staffId: person.id, actor: person.email, role: person.role };
+    }
+    return null;
   }
 
   async close(): Promise<void> {}
@@ -100,6 +112,54 @@ class MemoryTenantTx implements TenantTx {
     found.status = patch.status;
     if (patch.extraction !== undefined) found.extraction = patch.extraction;
     if (patch.error !== undefined) found.error = patch.error;
+  }
+
+  async listInbound(filter: { status?: InboundEmail["status"] } = {}) {
+    return clone(this.s.inbound.filter((m) => !filter.status || m.status === filter.status));
+  }
+
+  async findContact(query: { email: string | null; phone: string | null }) {
+    const email = query.email?.toLowerCase() ?? null;
+    const found =
+      (email && this.s.contacts.find((c) => c.email === email)) ||
+      (query.phone && this.s.contacts.find((c) => c.phone === query.phone)) ||
+      null;
+    return found ? clone(found) : null;
+  }
+
+  async insertContact(contact: Parameters<TenantTx["insertContact"]>[0]) {
+    const email = contact.email?.toLowerCase() ?? null;
+    if (email && this.s.contacts.some((c) => c.email === email)) {
+      throw new ConflictError("contact_exists", `${email} is already a contact`);
+    }
+    const now = this.now();
+    const record: ContactRecord = { ...clone(contact), email, id: randomUUID(), tenantId: this.tenantId, crmRef: null, createdAt: now, updatedAt: now };
+    this.s.contacts.push(record);
+    return clone(record);
+  }
+
+  async updateContact(id: string, patch: Parameters<TenantTx["updateContact"]>[1]) {
+    const found = this.s.contacts.find((c) => c.id === id);
+    if (!found) throw new NotFoundError("Contact");
+    if (patch.name) found.name = patch.name;
+    if (patch.email) found.email = patch.email.toLowerCase();
+    if (patch.phone) found.phone = patch.phone;
+    if (patch.company) found.company = patch.company;
+    if (patch.crmRef) found.crmRef = patch.crmRef;
+    found.updatedAt = this.now();
+    return clone(found);
+  }
+
+  async listContacts() {
+    return clone(this.s.contacts);
+  }
+
+  async getSyncState(key: string) {
+    return this.s.sync[key] ?? null;
+  }
+
+  async setSyncState(key: string, value: string) {
+    this.s.sync[key] = value;
   }
 
   async insertLead(draft: Parameters<TenantTx["insertLead"]>[0]) {
@@ -176,6 +236,28 @@ class MemoryTenantTx implements TenantTx {
 
   async listAudit() {
     return clone(this.s.audit);
+  }
+
+  async insertStaff(draft: Parameters<TenantTx["insertStaff"]>[0]) {
+    const email = draft.email.toLowerCase();
+    if (this.s.staff.some((p) => p.email === email && p.revokedAt === null)) {
+      throw new ConflictError("staff_exists", `${email} already has access`);
+    }
+    const record = { id: randomUUID(), tenantId: this.tenantId, email, name: draft.name, role: draft.role, createdAt: this.now(), revokedAt: null, tokenHash: draft.tokenHash };
+    this.s.staff.push(record);
+    const { tokenHash: _hash, ...visible } = record;
+    return clone(visible);
+  }
+
+  async listStaff() {
+    return clone(this.s.staff.map(({ tokenHash: _hash, ...visible }) => visible));
+  }
+
+  async revokeStaff(email: string) {
+    const person = this.s.staff.find((p) => p.email === email.toLowerCase() && p.revokedAt === null);
+    if (!person) return false;
+    person.revokedAt = this.now();
+    return true;
   }
 
   async getOverrides() {

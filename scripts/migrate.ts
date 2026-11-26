@@ -37,7 +37,7 @@ export async function migrate(connectionString: string, log: (msg: string) => vo
   return applied;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const url = process.env.DATABASE_URL;
   if (!url) {
     console.error("DATABASE_URL is not set");

@@ -47,3 +47,29 @@ tools:
           unit: visit
           unit_price: 350
           aliases: [emergency, call-out, callout, urgent visit]
+
+# Each workflow has its own trigger, owner and on/off switch. Steps may make a
+# tool stricter than its own policy, never looser.
+workflows:
+  sales_enquiry:
+    enabled: true
+    description: Quote requests by email. Create the lead, then a priced quote that waits for approval.
+    priority: 10
+    trigger: { channel: email, intent: quote }
+    owner: sales@gulfcool.example
+    steps:
+      - tool: crm.create_lead
+      - tool: quote.issue
+  general_enquiry:
+    enabled: true
+    description: Any other customer email. Record the lead, but have a person check it first.
+    priority: 50
+    trigger: { channel: email }
+    owner: ops@gulfcool.example
+    steps:
+      - tool: crm.create_lead
+        approval: required   # stricter than the tool's own "auto"
+
+connectors:
+  mailbox: { kind: fake }
+  crm: { kind: fake }
