@@ -5,6 +5,7 @@ import type { GatewayOutcome } from "../gateway/gateway.ts";
 import { buildExtractionRequest, ExtractionError, type Extraction, type ExtractionRequest } from "../llm/extraction.ts";
 import { scopeFor, type Runtime } from "../runtime.ts";
 import type { ResolvedWorkflow } from "../workflows/workflows.ts";
+import { injectionSignals } from "./injection.ts";
 
 export const INTAKE_ACTOR = "system:email-intake";
 
@@ -167,6 +168,13 @@ export async function handleInboundEmail(rt: Runtime, tenantId: string, email: I
     };
     const notes: string[] = [];
     if (lowConfidence) notes.push(`model confidence ${ex.confidence.toFixed(2)} is below ${min}`);
+    const signals = injectionSignals(`${email.subject}
+${email.text}`);
+    if (signals.length > 0) {
+      notes.push("the email contains instructions aimed at the AI; check it before acting");
+      await tx.appendAudit({ actor: INTAKE_ACTOR, type: "email.suspicious", subject: inboundId, data: { signals } });
+    }
+    const holdAll = lowConfidence || signals.length > 0;
     const contactEmail = ex.contact.email ?? senderAddress(email.from);
 
     for (const step of workflow.steps) {
@@ -189,14 +197,14 @@ export async function handleInboundEmail(rt: Runtime, tenantId: string, email: I
           actor: INTAKE_ACTOR,
           idempotencyKey: stepKey(email.messageId, step.tool),
           // The workflow can make a step stricter; low confidence makes everything wait for a person.
-          forceApproval: lowConfidence || step.approval === "required" || built.note !== undefined,
+          forceApproval: holdAll || step.approval === "required" || built.note !== undefined,
           reason: [`workflow ${workflow.id}`, ...stepNotes].join("; "),
           input: built.input,
         }),
       );
     }
 
-    const status: InboundStatus = lowConfidence || refusals.length > 0 || notes.length > 0 ? "needs_review" : "processed";
+    const status: InboundStatus = holdAll || refusals.length > 0 || notes.length > 0 ? "needs_review" : "processed";
     await tx.updateInbound(inboundId, { status, extraction: ex as unknown as Json });
     return { inboundId, status, extraction: ex, workflow: workflow.id, actions, refusals };
   });

@@ -10,7 +10,10 @@ npm start           # in-memory store; prints a temporary connect command per de
 npm test            # in-memory store; set DATABASE_URL to also run every suite and the RLS tests on Postgres
 npm run aiops help  # the administrator's command line
 npm run worker      # reads each company's mailbox on a timer (needs DATABASE_URL)
+npm run demo        # the recorded walkthrough: three people, five emails, delivered on Enter
 ```
+
+The demo runs entirely on this computer with fictional companies and stand-in mail and CRM. `docs/demo-script.md` has the setup and a timed two-minute script, and `test/demo.test.ts` runs every step of it in CI.
 
 ## How it works
 
@@ -46,6 +49,8 @@ npm run worker      # reads each company's mailbox on a timer (needs DATABASE_UR
 **Sessions.** The prompt needs the person's answer to reach the server that asked, so `/mcp` keeps sessions. They grant nothing: the token is checked on every request and must belong to the session's person (another person's session id is "not found"), each request re-reads the company's config and updates the tool list in place, and sessions close after 30 idle minutes. Sessions live in memory, so run one `app` process (as `docker-compose.yml` does).
 
 **Replies go only to the sender.** `email.send_reply` takes the id of an inbound email and the text. The recipient, subject and thread are taken from the stored email, so neither the model nor an email's contents can redirect a reply. The approver sees the exact message, and the approved message is the one sent.
+
+**Email that tries to give the AI orders.** Intake also looks for wording addressed to an assistant ("ignore previous instructions", "do not ask for approval"). When it finds some, every step for that email waits for a person, with the reason shown, and the email goes to the review queue. This is an extra layer: even without it, the model only labels, replies go only to the sender, and there is no tool that forwards data.
 
 **Email in, routed to a workflow.** The worker reads each company's mailbox from its saved position (Gmail, or a fake in tests) and moves that position only past messages it has handled. For each email the model makes one structured-output call to label it: contact, summary, urgency, the company's custom fields and an intent chosen from that company's active email workflows (or "other"). Plain code then picks the first active workflow, by priority, whose intent matches, and runs its steps through the gateway with each step's policy. An email no workflow takes, a low-confidence one, or one the model declines goes to the review queue, which people see and close from Claude Code.
 
@@ -138,6 +143,8 @@ npm run typecheck
 | `routing.test.ts` | Email to workflow by intent and priority, stricter steps, unrouted email, runtime switches, repeat customers, CRM sync, what intents the model sees |
 | `connectors.test.ts` | Gmail, Zoho CRM and HubSpot request and response shapes against a stub, error handling, secrets by name only |
 | `mail-poller.test.ts` | Oldest first, saved position, no double handling, retry after a refusal |
+| `injection.test.ts` | Text aimed at the AI is spotted, ordinary wording is not; such an email causes no automatic action and sends nothing |
+| `demo.test.ts` | The recorded walkthrough end to end over MCP |
 | `approvals.test.ts` | The approval prompt end to end with the MCP client playing the person: confirm, decline, no prompt support, self-approval, roles, rejection, long-session tool updates, session hijack, revocation; server approvals; fingerprints; expiry; replies only to the sender |
 | `staff.test.ts` | Tokens resolve to one person and company, hashes never leak, duplicates refused, revocation |
 | `workflows.test.ts` | Many workflows per company, stricter-only steps, runtime pausing, the `never` policy, connectors |
@@ -154,6 +161,6 @@ Done: **M0** the foundation (MCP endpoint, people and roles, workflows, gateway,
 
 - **M1 follow-ups** A live sandbox run for each connector; Microsoft 365; an intake accuracy set of labelled emails with targets
 - **M2 follow-ups** Two approvers above a value; per-tool approver lists; an outbox so a send that succeeds but fails to record can never repeat
-- **M3** Recorded demo; a second pack set up with configuration only
+- **M3** Record the demo (the runner and script are in place: `npm run demo`, `docs/demo-script.md`); real model and a sandbox CRM for the recording
 - **M4–M6** Document answers with citations, invoice to purchase-order matching, phone, reporting over fixed read-only views
 - **M7** Setup wizard and connector sign-in links

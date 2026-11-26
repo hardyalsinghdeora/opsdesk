@@ -3,3 +3,5 @@ node_modules/
 *.log
 coverage/
 dist/
+# Local demo setup: per-person folders and demo tokens
+demo-workspace/

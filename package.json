@@ -15,7 +15,8 @@
     "db:migrate": "node scripts/migrate.ts",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "demo": "node src/demo/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.13.0",
