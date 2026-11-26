@@ -29,7 +29,7 @@ for (const factory of storeFactories()) {
       assert.deepEqual(stored?.customFields, { property_type: "villa", emirate: "Dubai" });
       assert.deepEqual(
         (await audit("gulfcool")).map((e) => e.type),
-        ["email.received", "email.extracted", "action.proposed", "action.executed", "action.proposed"],
+        ["email.received", "email.extracted", "email.routed", "action.proposed", "action.executed", "action.proposed"],
       );
     });
 

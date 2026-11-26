@@ -1,7 +1,8 @@
 import type { z } from "zod";
-import type { CompanyConfig } from "../config/schema.ts";
+import type { CompanyConfig, ToolApproval } from "../config/schema.ts";
 import type { Json } from "../core/json.ts";
 import type { TenantTx } from "../store/types.ts";
+import type { Connectors } from "../connectors/types.ts";
 
 export interface ToolContext<S> {
   tenantId: string;
@@ -11,6 +12,8 @@ export interface ToolContext<S> {
   now: Date;
   /** Who is causing the effect: the approver for approved actions. */
   actor: string;
+  /** The company's external systems (CRM, mailbox, ...). */
+  connectors: Connectors;
 }
 
 /**
@@ -27,12 +30,12 @@ export interface ToolDefinition<I = any, S = any> {
   inputSchema: z.ZodType<I>;
   settingsSchema: z.ZodType<S>;
   /** Deterministic, side-effect free. Shown to the approver before they decide. */
-  preview?(ctx: Omit<ToolContext<S>, "tx" | "actor">, input: I): Json;
+  preview?(ctx: Omit<ToolContext<S>, "actor" | "connectors">, input: I): Json | Promise<Json>;
   execute(ctx: ToolContext<S>, input: I): Promise<Json>;
 }
 
 export interface EnabledTool {
   tool: ToolDefinition;
   settings: unknown;
-  approval: "required" | "auto";
+  approval: ToolApproval;
 }

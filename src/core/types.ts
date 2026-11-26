@@ -29,9 +29,19 @@ export interface InboundEmail extends InboundEmailInput {
   error: string | null;
 }
 
+export interface ContactRecord extends Contact {
+  id: string;
+  tenantId: string;
+  /** The contact's id in the company's CRM, once synced. */
+  crmRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Lead {
   id: string;
   tenantId: string;
+  contactId: string | null;
   contact: Contact;
   summary: string;
   stage: string;
@@ -70,7 +80,7 @@ export interface Quote {
   createdAt: string;
 }
 
-export type ActionStatus = "pending_approval" | "executed" | "rejected" | "failed";
+export type ActionStatus = "pending_approval" | "executed" | "rejected" | "failed" | "expired";
 
 export interface ActionRecord {
   id: string;
@@ -104,4 +114,14 @@ export interface AuditEntry extends AuditDraft {
   at: string;
   prevHash: string;
   hash: string;
+}
+
+export interface StaffRecord {
+  id: string;
+  tenantId: string;
+  email: string;
+  name: string;
+  role: "viewer" | "staff" | "approver" | "owner";
+  createdAt: string;
+  revokedAt: string | null;
 }

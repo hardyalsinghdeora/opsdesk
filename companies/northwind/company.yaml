@@ -32,3 +32,17 @@ tools:
       default_stage: qualification
   quote.issue:
     enabled: false          # freight rates are quoted by people here; the tool is off
+
+workflows:
+  rate_request:
+    enabled: true
+    description: Freight rate requests by email. Record the lead; a person quotes the rate.
+    priority: 10
+    trigger: { channel: email, intent: quote }
+    owner: sales@northwind.example
+    steps:
+      - tool: crm.create_lead
+
+connectors:
+  mailbox: { kind: fake }
+  crm: { kind: fake }

@@ -2,8 +2,11 @@ import type { CompanyConfig } from "../config/schema.ts";
 import { ConflictError, ForbiddenError, NotFoundError, OpsdeskError, ToolDisabledError, ValidationError } from "../core/errors.ts";
 import type { Json } from "../core/json.ts";
 import type { ActionRecord } from "../core/types.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../core/json.ts";
 import type { TenantTx } from "../store/types.ts";
 import type { Toolset } from "../tools/registry.ts";
+import type { Connectors } from "../connectors/types.ts";
 
 export interface ActionRequest {
   tool: string;
@@ -26,6 +29,20 @@ export type GatewayOutcome =
   | { ok: true; action: ActionRecord; created: boolean }
   | { ok: false; error: OpsdeskError };
 
+/**
+ * A short fingerprint of exactly what would run. An approver is shown it with
+ * the action; approving with a fingerprint fails if the action is no longer
+ * the one they saw.
+ */
+export function actionFingerprint(action: Pick<ActionRecord, "id" | "tool" | "input" | "preview">): string {
+  return createHash("sha256").update(canonicalJson({ id: action.id, tool: action.tool, input: action.input, preview: action.preview })).digest("hex").slice(0, 16);
+}
+
+/** When a pending action stops being approvable. */
+export function expiresAt(action: ActionRecord, config: CompanyConfig): Date {
+  return new Date(Date.parse(action.requestedAt) + config.approvals.expire_hours * 3_600_000);
+}
+
 export function unwrap(outcome: GatewayOutcome): { action: ActionRecord; created: boolean } {
   if (!outcome.ok) throw outcome.error;
   return outcome;
@@ -35,6 +52,8 @@ export interface GatewayScope {
   tx: TenantTx;
   config: CompanyConfig;
   toolset: Toolset;
+  /** The company's external systems. Only tools, run by the gateway, use them. */
+  connectors?: Connectors;
 }
 
 /**
@@ -63,6 +82,16 @@ export class ActionGateway {
     }
     const { tool, settings, approval } = toolset.get(req.tool);
 
+    if (tool.effect === "write" && approval === "never") {
+      await tx.appendAudit({
+        actor: req.actor,
+        type: "action.refused",
+        subject: req.tool,
+        data: { reason: "policy_never", idempotency_key: req.idempotencyKey },
+      });
+      return { ok: false, error: new ForbiddenError(`Tool "${req.tool}" is set to never run for this company`) };
+    }
+
     const existing = await tx.getActionByKey(req.idempotencyKey);
     if (existing) {
       await tx.appendAudit({ actor: req.actor, type: "action.deduplicated", subject: existing.id, data: { tool: req.tool } });
@@ -85,7 +114,7 @@ export class ActionGateway {
     let preview: Json | null = null;
     if (tool.preview) {
       try {
-        preview = tool.preview({ tenantId: tx.tenantId, config, settings, now }, input);
+        preview = await tool.preview({ tenantId: tx.tenantId, config, settings, now, tx }, input);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await tx.appendAudit({ actor: req.actor, type: "action.refused", subject: req.tool, data: { reason: "preview_failed", message } });
@@ -121,20 +150,40 @@ export class ActionGateway {
     return { ok: true, action: record, created: true };
   }
 
-  async approve(scope: GatewayScope, actionId: string, approver: string, note?: string): Promise<GatewayOutcome> {
+  async approve(
+    scope: GatewayScope,
+    actionId: string,
+    approver: string,
+    note?: string,
+    options: { fingerprint?: string; via?: string } = {},
+  ): Promise<GatewayOutcome> {
     const action = await this.pending(scope.tx, actionId);
+    if (this.clock() >= expiresAt(action, scope.config)) {
+      await scope.tx.updateAction(action.id, { status: "expired", decidedAt: this.clock().toISOString() });
+      await scope.tx.appendAudit({ actor: approver, type: "action.expired", subject: action.id, data: { tool: action.tool, expire_hours: scope.config.approvals.expire_hours } });
+      return { ok: false, error: new ConflictError("action_expired", `This request expired after ${scope.config.approvals.expire_hours} hours; ask for it again`) };
+    }
+    if (options.fingerprint !== undefined && options.fingerprint !== actionFingerprint(action)) {
+      await scope.tx.appendAudit({ actor: approver, type: "action.refused", subject: action.id, data: { reason: "changed_since_shown" } });
+      return { ok: false, error: new ConflictError("action_changed", "The action changed after it was shown to you; review it again") };
+    }
     if (approver === action.requestedBy) {
       await scope.tx.appendAudit({ actor: approver, type: "action.refused", subject: action.id, data: { reason: "self_approval" } });
       return { ok: false, error: new ForbiddenError("The requester of an action cannot approve it") };
     }
-    if (!scope.toolset.has(action.tool)) {
-      // Switched off after it was proposed: refuse rather than act on stale permission.
+    if (!scope.toolset.has(action.tool) || scope.toolset.get(action.tool).approval === "never") {
+      // Switched off, or set to never, after it was proposed: refuse rather than act on stale permission.
       await scope.tx.appendAudit({ actor: approver, type: "action.refused", subject: action.id, data: { reason: "tool_disabled" } });
       return { ok: false, error: new ToolDisabledError(action.tool) };
     }
     const now = this.clock().toISOString();
     const approved = await scope.tx.updateAction(action.id, { decidedBy: approver, decidedAt: now, decisionNote: note ?? null });
-    await scope.tx.appendAudit({ actor: approver, type: "action.approved", subject: action.id, data: { tool: action.tool, note: note ?? null } });
+    await scope.tx.appendAudit({
+      actor: approver,
+      type: "action.approved",
+      subject: action.id,
+      data: { tool: action.tool, note: note ?? null, via: options.via ?? null, fingerprint: actionFingerprint(action) },
+    });
     return { ok: true, action: await this.run(scope, approved, approver), created: false };
   }
 
@@ -165,7 +214,7 @@ export class ActionGateway {
     const input = tool.inputSchema.parse(action.input);
     try {
       const result = await tx.attempt(() =>
-        tool.execute({ tenantId: tx.tenantId, config, settings, tx, now: this.clock(), actor }, input),
+        tool.execute({ tenantId: tx.tenantId, config, settings, tx, now: this.clock(), actor, connectors: scope.connectors ?? {} }, input),
       );
       const done = await tx.updateAction(action.id, { status: "executed", result });
       await tx.appendAudit({ actor, type: "action.executed", subject: action.id, data: { tool: action.tool, result } });

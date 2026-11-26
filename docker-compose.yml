@@ -1,5 +1,8 @@
-# Local stack: Postgres + opsdesk. `docker compose up --build`
-# Set OPSDESK_API_KEYS (and ANTHROPIC_API_KEY for the real model) in .env first.
+# opsdesk on your own server.
+#   docker compose up -d                      start the database and the MCP server
+#   docker compose run --rm aiops doctor      check everything and say what to fix
+#   docker compose run --rm aiops users add --email E --name N --role owner
+# Fill in .env first (copy .env.example).
 services:
   db:
     image: postgres:16
@@ -7,12 +10,12 @@ services:
       POSTGRES_USER: opsdesk
       POSTGRES_PASSWORD: opsdesk
       POSTGRES_DB: opsdesk
-    ports: ["5432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U opsdesk"]
       interval: 2s
       retries: 20
     volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
 
   app:
     build: .
@@ -22,6 +25,30 @@ services:
     environment:
       DATABASE_URL: postgres://opsdesk:opsdesk@db:5432/opsdesk
     ports: ["3000:3000"]
+    restart: unless-stopped
+
+  # Reads each company's mailbox on a timer and runs intake. Actions still go through approval.
+  worker:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+      app: { condition: service_started }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://opsdesk:opsdesk@db:5432/opsdesk
+    command: ["node", "src/worker.ts"]
+    restart: unless-stopped
+
+  # The aiops command line. Not started by "up"; used with "docker compose run --rm aiops ...".
+  aiops:
+    build: .
+    profiles: [cli]
+    depends_on:
+      db: { condition: service_healthy }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://opsdesk:opsdesk@db:5432/opsdesk
+    entrypoint: ["node", "src/cli/aiops.ts"]
 
 volumes:
   pgdata:

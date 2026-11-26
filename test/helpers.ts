@@ -35,7 +35,7 @@ async function freshPostgres(url: string): Promise<Store> {
   } else {
     const admin = new pg.Client({ connectionString: url });
     await admin.connect();
-    await admin.query("TRUNCATE inbound_emails, leads, quotes, actions, audit_log, tenant_settings, tenants");
+    await admin.query("TRUNCATE inbound_emails, leads, contacts, sync_state, quotes, actions, audit_log, tenant_settings, staff, tenants");
     await admin.end();
   }
   current = new PostgresStore(url);

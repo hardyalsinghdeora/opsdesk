@@ -3,6 +3,7 @@ import type { CompanyConfig } from "../config/schema.ts";
 import type { InboundEmailInput } from "../core/types.ts";
 import type { PriceListItem } from "../tools/pricing.ts";
 import type { Toolset } from "../tools/registry.ts";
+import { resolveWorkflows } from "../workflows/workflows.ts";
 
 /** What the pipeline works with after extraction, whatever the company's shape. */
 export interface Extraction {
@@ -10,6 +11,8 @@ export interface Extraction {
   contact: { name: string | null; email: string | null; phone: string | null; company: string | null };
   summary: string;
   urgency: "low" | "normal" | "high";
+  /** One of the company's email workflow intents, or "other". Null when it has none. */
+  intent: string | null;
   confidence: number;
   custom_fields: Record<string, string | null>;
   wants_quote: boolean;
@@ -28,6 +31,8 @@ export interface ExtractionRequest {
   /** Present only when the quote tool is enabled. Used by the fake extractor. */
   catalog: PriceListItem[];
   fieldKeys: string[];
+  /** The intents the company's active email workflows listen for. Empty: no intent field. */
+  intents: { name: string; description: string }[];
 }
 
 export interface ExtractionResult {
@@ -55,6 +60,17 @@ export class ExtractionError extends Error {
  * Build the output schema for one company. Fields exist only for what the
  * company has switched on: no quote tool, no quote fields.
  */
+/** Intent labels come only from active email workflows, so the model sees nothing else. */
+export function emailIntents(config: CompanyConfig, toolset: Toolset): { name: string; description: string }[] {
+  const seen = new Map<string, string>();
+  for (const wf of resolveWorkflows(config, toolset)) {
+    if (wf.active && wf.trigger.channel === "email" && wf.trigger.intent && !seen.has(wf.trigger.intent)) {
+      seen.set(wf.trigger.intent, wf.description);
+    }
+  }
+  return [...seen].map(([name, description]) => ({ name, description }));
+}
+
 export function buildExtractionSchema(config: CompanyConfig, toolset: Toolset): z.ZodObject {
   const shape: Record<string, z.ZodType> = {
     is_business_inquiry: z.boolean().describe("false for spam, newsletters, auto-replies and job applications"),
@@ -68,6 +84,12 @@ export function buildExtractionSchema(config: CompanyConfig, toolset: Toolset): 
     urgency: z.enum(["low", "normal", "high"]),
     confidence: z.number().describe("0 to 1: how sure you are the fields above are right"),
   };
+
+  const intents = emailIntents(config, toolset);
+  if (intents.length > 0) {
+    const names: [string, ...string[]] = ["other", ...intents.map((i) => i.name)];
+    shape.intent = z.enum(names).describe("what the sender wants, from the list in the instructions; other if none fits");
+  }
 
   if (config.lead_fields.length > 0) {
     const fields: Record<string, z.ZodType> = {};
@@ -103,6 +125,11 @@ export function buildSystemPrompt(config: CompanyConfig, toolset: Toolset): stri
     lines.push("", "Custom fields:");
     for (const f of config.lead_fields) lines.push(`- ${f.key} (${f.label}): ${f.description}`);
   }
+  const intents = emailIntents(config, toolset);
+  if (intents.length > 0) {
+    lines.push("", "Intents (pick one, or other):");
+    for (const i of intents) lines.push(`- ${i.name}: ${i.description}`);
+  }
   const catalog = toolset.settingsOf<{ price_list: PriceListItem[] }>("quote.issue")?.price_list;
   if (catalog && catalog.length > 0) {
     lines.push("", "Service catalogue (map requests to these codes; prices are applied later by the system):");
@@ -133,6 +160,7 @@ export function buildExtractionRequest(
     schema: buildExtractionSchema(config, toolset),
     catalog: toolset.settingsOf<{ price_list: PriceListItem[] }>("quote.issue")?.price_list ?? [],
     fieldKeys: config.lead_fields.map((f) => f.key),
+    intents: emailIntents(config, toolset),
   };
 }
 
@@ -151,6 +179,12 @@ export function normaliseExtraction(raw: Record<string, any>, request: Extractio
     },
     summary: String(raw.summary ?? "").trim(),
     urgency: ["low", "normal", "high"].includes(raw.urgency) ? raw.urgency : "normal",
+    intent:
+      request.intents.length === 0
+        ? null
+        : request.intents.some((i) => i.name === raw.intent)
+          ? String(raw.intent)
+          : "other",
     confidence: Math.min(1, Math.max(0, Number(raw.confidence) || 0)),
     custom_fields: custom,
     wants_quote: request.catalog.length > 0 && Boolean(raw.wants_quote),
