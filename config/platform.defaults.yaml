@@ -11,6 +11,8 @@ llm:
 approvals:
   # Write actions need a human unless the company pack says otherwise per tool.
   default: required
+  # A request nobody decides within this many hours expires and can no longer be approved.
+  expire_hours: 72
 
 channels:
   email:

@@ -47,6 +47,11 @@ tools:
           unit: visit
           unit_price: 350
           aliases: [emergency, call-out, callout, urgent visit]
+  email.send_reply:
+    enabled: true
+    approval: required      # anything a customer reads waits for a person
+    settings:
+      signature: "GulfCool Technical Services (fictional)"
 
 # Each workflow has its own trigger, owner and on/off switch. Steps may make a
 # tool stricter than its own policy, never looser.

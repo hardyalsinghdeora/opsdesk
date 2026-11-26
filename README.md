@@ -22,8 +22,9 @@ npm run worker      # reads each company's mailbox on a timer (needs DATABASE_UR
                                                ▼
                                      tool list built for THIS person, from THIS company's live config:
                                      whoami · list_tools · list_workflows · list_actions · get_action ·
-                                     verify_audit · list_review_queue · resolve_review (staff and up) ·
-                                     request_action (staff and up; only enabled, not-"never" tools)
+                                     list_emails · verify_audit · list_review_queue · resolve_review (staff+) ·
+                                     request_action (staff+; only enabled, not-"never" tools) ·
+                                     approve_action · reject_action (approvers+)
                                                │
                                                ▼
                                      ActionGateway ── enabled? ── valid input? ── seen this key? ── policy
@@ -39,6 +40,12 @@ npm run worker      # reads each company's mailbox on a timer (needs DATABASE_UR
 **What the model can see is built from config.** The MCP tool list is rebuilt per request from the company's resolved config and the caller's role. A disabled tool, a tool set to `never`, or a permission the person lacks is simply absent, so the model cannot be talked into calling it. `list_tools` returns each tool's input schema and approval policy.
 
 **The gateway is the only way to cause an effect.** For each request it refuses a disabled tool or a `never` tool, validates the input, de-duplicates on the idempotency key, builds a deterministic preview (for example, the priced quote) and then runs it now (`auto`) or holds it as `pending_approval` (`required`). Approval checks the approver is not the requester and the tool is still on. Refusals are returned as values, so the audit entry always commits.
+
+**Approvals are answered by the person, not the model.** `approve_action` does not take a decision as input. It makes opsdesk ask the person directly through Claude Code's prompt (an MCP elicitation), showing exactly what will run, who asked, the reason and a fingerprint. Only a ticked "approve" from that prompt runs the action, and only if the action still matches the fingerprint shown. The note in the audit log is the person's own. The requester cannot approve their own request, and a request nobody decides within `approvals.expire_hours` (default 72) expires. An app that cannot show prompts is told to use `aiops approve ID --as EMAIL` on the server, which shows the same details and asks for confirmation. Approvals trust the person's own app: someone who configures their Claude Code to answer prompts automatically has chosen to approve automatically.
+
+**Sessions.** The prompt needs the person's answer to reach the server that asked, so `/mcp` keeps sessions. They grant nothing: the token is checked on every request and must belong to the session's person (another person's session id is "not found"), each request re-reads the company's config and updates the tool list in place, and sessions close after 30 idle minutes. Sessions live in memory, so run one `app` process (as `docker-compose.yml` does).
+
+**Replies go only to the sender.** `email.send_reply` takes the id of an inbound email and the text. The recipient, subject and thread are taken from the stored email, so neither the model nor an email's contents can redirect a reply. The approver sees the exact message, and the approved message is the one sent.
 
 **Email in, routed to a workflow.** The worker reads each company's mailbox from its saved position (Gmail, or a fake in tests) and moves that position only past messages it has handled. For each email the model makes one structured-output call to label it: contact, summary, urgency, the company's custom fields and an intent chosen from that company's active email workflows (or "other"). Plain code then picks the first active workflow, by priority, whose intent matches, and runs its steps through the gateway with each step's policy. An email no workflow takes, a low-confidence one, or one the model declines goes to the review queue, which people see and close from Claude Code.
 
@@ -114,6 +121,8 @@ The last command prints Maya's connect line. In Claude Code she can then check i
 | `config validate` / `config show` | Checks every pack; prints one company's resolved settings, tools and workflows |
 | `users add` / `list` / `remove` | Gives access (prints the connect command once), lists people, revokes at once |
 | `mail poll` | Reads new mail once now; the worker does this every `OPSDESK_POLL_SECONDS` |
+| `approvals` | Lists what is waiting for approval, with expiry and fingerprint |
+| `approve ID --as EMAIL` / `reject ID --as EMAIL --note N` | Decides as a named approver or owner, for apps that cannot show prompts; `approve` shows what will run and asks, or takes `--yes` |
 
 ## Tests
 
@@ -129,6 +138,7 @@ npm run typecheck
 | `routing.test.ts` | Email to workflow by intent and priority, stricter steps, unrouted email, runtime switches, repeat customers, CRM sync, what intents the model sees |
 | `connectors.test.ts` | Gmail, Zoho CRM and HubSpot request and response shapes against a stub, error handling, secrets by name only |
 | `mail-poller.test.ts` | Oldest first, saved position, no double handling, retry after a refusal |
+| `approvals.test.ts` | The approval prompt end to end with the MCP client playing the person: confirm, decline, no prompt support, self-approval, roles, rejection, long-session tool updates, session hijack, revocation; server approvals; fingerprints; expiry; replies only to the sender |
 | `staff.test.ts` | Tokens resolve to one person and company, hashes never leak, duplicates refused, revocation |
 | `workflows.test.ts` | Many workflows per company, stricter-only steps, runtime pausing, the `never` policy, connectors |
 | `config.test.ts` | Layering, what overrides may touch, bad packs fail loudly |
@@ -140,10 +150,10 @@ npm run typecheck
 
 ## Roadmap
 
-Done: **M0** the foundation (MCP endpoint, people and roles, workflows, gateway, audit, RLS, `aiops`) and **M1** inbox to record (Gmail, Zoho CRM, HubSpot, routing to workflows, contacts without duplicates, review queue, mail worker). The connectors are tested against documented request shapes, not yet against live sandbox accounts. Next:
+Done: **M0** the foundation (MCP endpoint, people and roles, workflows, gateway, audit, RLS, `aiops`), **M1** inbox to record (Gmail, Zoho CRM, HubSpot, routing to workflows, contacts without duplicates, review queue, mail worker) and **M2** approvals (prompts in Claude Code, `aiops approve`, fingerprints, expiry, replies to the sender only). The connectors are tested against documented request shapes, not yet against live sandbox accounts. Next:
 
 - **M1 follow-ups** A live sandbox run for each connector; Microsoft 365; an intake accuracy set of labelled emails with targets
-- **M2** Approvals from Claude Code (MCP elicitation, with `aiops approve` as a fallback); outbound email
+- **M2 follow-ups** Two approvers above a value; per-tool approver lists; an outbox so a send that succeeds but fails to record can never repeat
 - **M3** Recorded demo; a second pack set up with configuration only
 - **M4–M6** Document answers with citations, invoice to purchase-order matching, phone, reporting over fixed read-only views
 - **M7** Setup wizard and connector sign-in links

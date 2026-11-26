@@ -154,7 +154,13 @@ export const CompanyConfig = z
         max_tokens: z.number().int().positive(),
       })
       .strict(),
-    approvals: z.object({ default: ApprovalPolicy }).strict(),
+    approvals: z
+      .object({
+        default: ApprovalPolicy,
+        /** A request not decided within this many hours can no longer be approved. */
+        expire_hours: z.number().int().min(1).max(720).default(72),
+      })
+      .strict(),
     channels: z
       .object({
         email: z
@@ -189,7 +195,7 @@ export type CompanyConfig = z.infer<typeof CompanyConfig>;
  */
 export const RuntimeOverrides = z
   .object({
-    approvals: z.object({ default: ApprovalPolicy }).strict().optional(),
+    approvals: z.object({ default: ApprovalPolicy.optional(), expire_hours: z.number().int().min(1).max(720).optional() }).strict().optional(),
     channels: z
       .object({
         email: z

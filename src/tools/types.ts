@@ -30,7 +30,7 @@ export interface ToolDefinition<I = any, S = any> {
   inputSchema: z.ZodType<I>;
   settingsSchema: z.ZodType<S>;
   /** Deterministic, side-effect free. Shown to the approver before they decide. */
-  preview?(ctx: Omit<ToolContext<S>, "tx" | "actor" | "connectors">, input: I): Json;
+  preview?(ctx: Omit<ToolContext<S>, "actor" | "connectors">, input: I): Json | Promise<Json>;
   execute(ctx: ToolContext<S>, input: I): Promise<Json>;
 }
 

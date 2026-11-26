@@ -80,7 +80,7 @@ export interface Quote {
   createdAt: string;
 }
 
-export type ActionStatus = "pending_approval" | "executed" | "rejected" | "failed";
+export type ActionStatus = "pending_approval" | "executed" | "rejected" | "failed" | "expired";
 
 export interface ActionRecord {
   id: string;

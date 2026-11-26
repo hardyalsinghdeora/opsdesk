@@ -92,7 +92,7 @@ describe("MCP endpoint", () => {
     const gulf = (await toolNames("maya@gulfcool.example")).find((t) => t.name === "request_action")!;
     const north = (await toolNames("lee@northwind.example")).find((t) => t.name === "request_action")!;
     const options = (t: typeof gulf) => (t.inputSchema.properties!.tool as { enum: string[] }).enum;
-    assert.deepEqual(options(gulf), ["crm.create_lead", "quote.issue"]);
+    assert.deepEqual(options(gulf), ["crm.create_lead", "email.send_reply", "quote.issue"]);
     assert.deepEqual(options(north), ["crm.create_lead"]);
   });
 
@@ -133,7 +133,7 @@ describe("MCP endpoint", () => {
     await rt.store.withTenant("gulfcool", (tx) => tx.setOverrides({ tools: { "quote.issue": { enabled: false } } }));
     try {
       const tool = (await toolNames("maya@gulfcool.example")).find((t) => t.name === "request_action")!;
-      assert.deepEqual((tool.inputSchema.properties!.tool as { enum: string[] }).enum, ["crm.create_lead"]);
+      assert.deepEqual((tool.inputSchema.properties!.tool as { enum: string[] }).enum, ["crm.create_lead", "email.send_reply"]);
       const wfs = JSON.parse((await call("maya@gulfcool.example", "list_workflows")).text);
       assert.equal(wfs.find((w: { id: string }) => w.id === "sales_enquiry").active, false);
     } finally {

@@ -2,9 +2,10 @@ import type { CompanyConfig } from "../config/schema.ts";
 import { ConfigError, ToolDisabledError } from "../core/errors.ts";
 import { crmCreateLead } from "./crm-create-lead.ts";
 import { quoteIssue } from "./quote-issue.ts";
+import { emailSendReply } from "./email-send-reply.ts";
 import type { EnabledTool, ToolDefinition } from "./types.ts";
 
-export const BUILTIN_TOOLS: ToolDefinition[] = [crmCreateLead, quoteIssue];
+export const BUILTIN_TOOLS: ToolDefinition[] = [crmCreateLead, quoteIssue, emailSendReply];
 
 /** The tools one company may use, with their validated settings. */
 export class Toolset {

@@ -16,6 +16,8 @@ import { pollMailbox } from "../worker/mail-poller.ts";
 import { AnthropicExtractor } from "../llm/anthropic.ts";
 import { FakeExtractor } from "../llm/fake.ts";
 import { connectCommand, publicUrl } from "./connect.ts";
+import { createInterface } from "node:readline/promises";
+import { approveFromCli, describeForApproval, pendingApprovals, prepareDecision, rejectFromCli } from "./approvals.ts";
 
 const HELP = `aiops: run and look after opsdesk on this server
 
@@ -29,6 +31,10 @@ const HELP = `aiops: run and look after opsdesk on this server
   aiops users remove --email E [--company ID]
                                              revoke someone's access at once
   aiops mail poll [--company ID]             read new mail once now (the worker does this on a timer)
+  aiops approvals [--company ID]             list actions waiting for approval
+  aiops approve ID --as EMAIL [--note N] [--yes] [--company ID]
+                                             approve one action as that approver, after showing exactly what runs
+  aiops reject ID --as EMAIL --note N [--company ID]
 
 Roles: viewer (read), staff (read, ask for actions), approver (also approve), owner (also manage people).
 --company can be left out when this server runs one company.`;
@@ -141,7 +147,15 @@ export async function run(argv: string[]): Promise<number> {
   const flags = (args: string[]) =>
     parseArgs({
       args,
-      options: { company: { type: "string" }, email: { type: "string" }, name: { type: "string" }, role: { type: "string" } },
+      options: {
+        company: { type: "string" },
+        email: { type: "string" },
+        name: { type: "string" },
+        role: { type: "string" },
+        as: { type: "string" },
+        note: { type: "string" },
+        yes: { type: "boolean" },
+      },
       strict: true,
     }).values;
 
@@ -204,6 +218,50 @@ export async function run(argv: string[]): Promise<number> {
         return removed ? 0 : 1;
       }
       throw new UsageError(`Unknown "users ${sub ?? ""}". Try: aiops help`);
+    });
+  }
+  if (command === "approvals") {
+    const { company } = flags([sub, ...rest].filter((a): a is string => a !== undefined));
+    return withRuntime(async (rt) => {
+      const id = pickCompany([...rt.source.packs.keys()], company);
+      const pending = await pendingApprovals(rt, id);
+      if (pending.length === 0) console.log(`${id}: nothing is waiting for approval.`);
+      for (const p of pending) {
+        console.log(`${p.id}  ${p.tool.padEnd(18)} by ${p.requested_by}  expires ${p.expires_at}${p.reason ? `\n    ${p.reason}` : ""}`);
+      }
+      return 0;
+    });
+  }
+  if (command === "approve" || command === "reject") {
+    const actionId = sub;
+    const { company, as, note, yes } = flags(rest);
+    if (!actionId || actionId.startsWith("--")) throw new UsageError(`aiops ${command} needs the action id first. See: aiops approvals`);
+    if (!as) throw new UsageError(`aiops ${command} needs --as EMAIL: the approver making this decision`);
+    if (command === "reject" && !note) throw new UsageError("aiops reject needs --note with the reason");
+    return withRuntime(async (rt) => {
+      const id = pickCompany([...rt.source.packs.keys()], company);
+      const { action, fingerprint, approver } = await prepareDecision(rt, id, actionId, as);
+      if (command === "reject") {
+        const rejected = await rejectFromCli(rt, id, actionId, approver, note!);
+        console.log(`Rejected ${rejected.id}. It will not run.`);
+        return 0;
+      }
+      console.log(describeForApproval(action, fingerprint));
+      if (!yes) {
+        if (!process.stdin.isTTY) throw new UsageError("Not an interactive terminal: read the action above, then run again with --yes to approve it.");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question(`\nApprove and run this now as ${approver}? Type yes: `)).trim().toLowerCase();
+        rl.close();
+        if (answer !== "yes") {
+          console.log("Not approved. It is still waiting.");
+          return 1;
+        }
+      }
+      const outcome = await approveFromCli(rt, id, actionId, approver, fingerprint, note);
+      if (!outcome.ok) throw outcome.error;
+      const a = outcome.action;
+      console.log(a.status === "executed" ? `Approved and done: ${JSON.stringify(a.result)}` : `Approved, but it ${a.status}: ${a.error ?? ""}`);
+      return a.status === "executed" ? 0 : 1;
     });
   }
   if (command === "mail" && sub === "poll") {

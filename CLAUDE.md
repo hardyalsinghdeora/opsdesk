@@ -6,7 +6,7 @@ Self-hosted MCP server for service businesses. People use it from Claude Code wi
 - `npm test` - all tests on the in-memory store; set `DATABASE_URL` to also run every store-backed suite and the RLS tests on Postgres
 - `npm run typecheck` - `tsc --noEmit` (TypeScript runs directly via Node's type stripping; there is no build step)
 - `npm start` - MCP server on :3000; with no `DATABASE_URL` it prints a temporary connect command per company
-- `npm run aiops -- <command>` - the admin CLI (`doctor`, `migrate`, `config validate|show`, `users add|list|remove`, `mail poll`)
+- `npm run aiops -- <command>` - the admin CLI (`doctor`, `migrate`, `config validate|show`, `users add|list|remove`, `mail poll`, `approvals`, `approve`, `reject`)
 - `npm run worker` - polls each company's mailbox and runs intake (needs `DATABASE_URL`)
 
 ## Rules
@@ -21,6 +21,9 @@ Self-hosted MCP server for service businesses. People use it from Claude Code wi
 - Secrets are never in packs: connectors name environment variables (`*_ref`). Connectors take an injectable `fetch`; test them against stubs (`test/connectors.test.ts`), never live accounts in CI.
 - Email reaches tools only through workflows: intent comes from the company's active email workflows, routing and step inputs are plain code (`src/pipelines/email-intake.ts`).
 - Contacts are matched before they are created, and a match only fills in missing fields.
+- An approval decision never comes from tool input. It comes from the person: an MCP elicitation (sent with `relatedRequestId` on the call's own stream) or `aiops approve --as`. Approve with the fingerprint that was shown.
+- `/mcp` sessions are in memory and grant nothing: re-authenticate every request, match the session to its person, call `refresh()` before handling. Run a single app process.
+- A tool's preview and execute build the effect from the same function and stored data (see `email-send-reply.ts`), so what is approved is what runs.
 - New tenant-owned tables need `tenant_id`, the RLS policy in a migration, and grants for `opsdesk_app`. `audit_log` stays insert-only. Tokens are stored only as SHA-256.
 - Money is integer minor units.
 - A company-specific need goes in its pack, or becomes a generic tool or setting. Never `if (tenant === ...)`.
